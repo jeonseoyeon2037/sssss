@@ -5,7 +5,7 @@ import { NotFoundError } from '../middleware/errorHandler';
 const router = Router();
 
 // 모든 컬렉션의 데이터 개수 조회
-router.get('/counts', async (req, res) => {
+router.get('/counts', async (_req, res) => {
   try {
     const collections = ['users', 'projects', 'schedules', 'conflicts', 'analytics'];
     const counts: Record<string, number> = {};
@@ -31,10 +31,10 @@ router.get('/counts', async (req, res) => {
 });
 
 // 특정 컬렉션의 모든 데이터 조회
-router.get('/:collection', async (req, res) => {
+router.get('/:collection', async (_req, res) => {
   try {
-    const { collection } = req.params;
-    const { limit = 50, offset = 0 } = req.query;
+    const { collection } = _req.params;
+    const { limit = 50, offset = 0 } = _req.query;
 
     const validCollections = ['users', 'projects', 'schedules', 'conflicts', 'analytics'];
     if (!validCollections.includes(collection)) {
@@ -64,7 +64,7 @@ router.get('/:collection', async (req, res) => {
       message: `${collection} 컬렉션 데이터 조회 완료`
     });
   } catch (error) {
-    console.error(`${req.params.collection} 데이터 조회 실패:`, error);
+    console.error(`${_req.params.collection} 데이터 조회 실패:`, error);
     if (error instanceof NotFoundError) {
       res.status(404).json({
         success: false,
@@ -80,9 +80,9 @@ router.get('/:collection', async (req, res) => {
 });
 
 // 특정 문서 조회
-router.get('/:collection/:id', async (req, res) => {
+router.get('/:collection/:id', async (_req, res) => {
   try {
-    const { collection, id } = req.params;
+    const { collection, id } = _req.params;
 
     const validCollections = ['users', 'projects', 'schedules', 'conflicts', 'analytics'];
     if (!validCollections.includes(collection)) {

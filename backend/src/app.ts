@@ -14,6 +14,7 @@ import conflictRoutes from './routes/conflicts';
 import googleRoutes from './routes/google';
 import dataRoutes from './routes/data';
 import analyticsRoutes from './routes/analytics';
+import personalTasksRoutes from './routes/personal-tasks';
 
 // 미들웨어 import
 import { errorHandler } from './middleware/errorHandler';
@@ -57,9 +58,10 @@ app.use('/api/conflicts', conflictRoutes);
 app.use('/api/google', googleRoutes);
 app.use('/api/data', dataRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/personal-tasks', personalTasksRoutes);
 
 // 헬스 체크 엔드포인트
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
