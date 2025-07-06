@@ -1,4 +1,6 @@
 backend/node_modules
 backend/dist
+backend/src/config/serviceAccountKey.json
+backend/src/config/firebase.ts
 frontend/node_modules
 frontend/.next
