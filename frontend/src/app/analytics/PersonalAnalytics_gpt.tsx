@@ -22,7 +22,7 @@ export default function PersonalAnalytics() {
   const [tasks, setTasks] = useState<Task[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/personal-tasks')
+    fetch('http://localhost:3001/api/analytics/personal-tasks')
       .then(res => res.json())
       .then((data: Task[]) => {
         const parsed = data.map(task => ({

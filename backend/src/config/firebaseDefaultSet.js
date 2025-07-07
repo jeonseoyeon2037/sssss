@@ -1,91 +1,91 @@
-const express = require('express');
 const admin = require('firebase-admin');
-const dotenv = require('dotenv');
-const path = require('path');
-
-dotenv.config();
-
-const app = express();
-const port = process.env.PORT || 3000;
-
-// Firebase Admin 초기화
-const serviceAccount = require(path.join(__dirname, 'serviceAccountKey.json'));
+const serviceAccount = require('./serviceAccountKey.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
-
 const db = admin.firestore();
 
-app.post('/init-firestore', async (req, res) => {
-  try {
-    // 1. personal_tasks
-    await db.collection('personal_tasks').doc('init_doc').set({
-      user_id: 'user_001',
-      date: '2025-07-01',
-      status: 'completed',
-      start_time: new Date(),
-      end_time: new Date(),
-      duration: 60,
-      tag: '업무',
-      emotion: 4,
-    });
+// 1. personal_tasks 컬렉션 스키마용 더미 문서
+async function initPersonalTasks() {
+  await db.collection('personal_tasks').doc('_schema').set({
+    user_id: '',
+    date: '', // YYYY-MM-DD
+    start_time: null,
+    end_time: null,
+    status: '',
+    tag: '',
+    duration: 0,
+    emotion: 0,
+  });
+  console.log('✅ personal_tasks 초기화 완료');
+}
 
-    // 2. department_tasks
-    await db.collection('department_tasks').doc('init_doc').set({
-      department: '개발팀',
-      assignee: 'user_001',
-      type: 'meeting',
-      assigned_time: new Date(),
-      start_time: new Date(),
-      delay: 15,
-      hours: 90,
-      duration: 75,
-      quality: 5,
-      participant_ids: ['user_002', 'user_003'],
-      month: '2025-07',
-      late: 1,
-    });
+// 2. department_tasks 컬렉션 스키마용 더미 문서
+async function initDepartmentTasks() {
+  await db.collection('department_tasks').doc('_schema').set({
+    department: '',
+    assignee: '',
+    type: '',
+    assigned_time: null,
+    start_time: null,
+    delay: 0,
+    hours: 0,
+    duration: 0,
+    quality: 0,
+    participant_ids: [],
+    month: '',
+    late: 0,
+  });
+  console.log('✅ department_tasks 초기화 완료');
+}
 
-    // 3. project_tasks
-    await db.collection('project_tasks').doc('init_doc').set({
-      project_id: 'project_001',
-      task_name: '기획 검토',
-      planned_start: new Date(),
-      planned_end: new Date(),
-      actual_start: new Date(),
-      actual_end: new Date(),
-      planned_duration: 120,
-      actual_duration: 135,
-      delta: 15,
-      step: '기획',
-      lag: 10,
-      status: 'completed',
-    });
+// 3. company_metrics 컬렉션 스키마용 더미 문서
+async function initCompanyMetrics() {
+  await db.collection('company_metrics').doc('_schema').set({
+    department: '',
+    date: null,
+    month: '',
+    hours: 0,
+    revenue: 0,
+    prod: 0,
+    fatigue: 0,
+    CS_count: 0,
+    ROI: 0,
+    source: '',
+    target: '',
+    value: 0,
+  });
+  console.log('✅ company_metrics 초기화 완료');
+}
 
-    // 4. company_metrics
-    await db.collection('company_metrics').doc('init_doc').set({
-      department: '마케팅팀',
-      date: '2025-07-06',
-      month: '2025-07',
-      hours: 300,
-      revenue: 2500000,
-      prod: 82,
-      fatigue: 2.7,
-      CS_count: 14,
-      ROI: 19.5,
-      source: '개발',
-      target: '성과',
-      value: 50,
-    });
+// 4. project_tasks 컬렉션 스키마용 더미 문서
+async function initProjectTasks() {
+  await db.collection('project_tasks').doc('_schema').set({
+    project_id: '',
+    task_name: '',
+    planned_start: null,
+    planned_end: null,
+    actual_start: null,
+    actual_end: null,
+    planned_duration: 0,
+    actual_duration: 0,
+    delta: 0,
+    step: '',
+    lag: 0,
+    status: '',
+  });
+  console.log('✅ project_tasks 초기화 완료');
+}
 
-    res.status(200).json({ message: '✅ Firestore 컬렉션 초기화 완료' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Firestore 초기화 실패', details: err.message });
-  }
-});
+// 실행
+async function initAllSchemas() {
+  console.log('\n🚀 컬렉션 스키마 초기화 시작...');
+  await initPersonalTasks();
+  await initDepartmentTasks();
+  await initCompanyMetrics();
+  await initProjectTasks();
+  console.log('\n🎉 모든 컬렉션 _schema 문서 삽입 완료!');
+}
 
-app.listen(port, () => {
-  console.log(`🚀 서버 실행 중: http://localhost:${port}`);
-});
+initAllSchemas();

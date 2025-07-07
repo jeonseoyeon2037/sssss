@@ -14,7 +14,7 @@ import conflictRoutes from './routes/conflicts';
 import googleRoutes from './routes/google';
 import dataRoutes from './routes/data';
 import analyticsRoutes from './routes/analytics';
-import personalTasksRoutes from './routes/personal-tasks';
+// import personalTasksRoutes from './routes/personal-tasks';
 
 // 미들웨어 import
 import { errorHandler } from './middleware/errorHandler';
@@ -30,7 +30,7 @@ app.use(express.urlencoded({ extended: true })); // URL 인코딩 파싱
 
 // CORS 설정
 const corsOptions = {
-  origin: process.env['CORS_ORIGIN'] || 'http://localhost:3000',
+  origin: 'http://localhost:3000',
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -58,7 +58,7 @@ app.use('/api/conflicts', conflictRoutes);
 app.use('/api/google', googleRoutes);
 app.use('/api/data', dataRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/personal-tasks', personalTasksRoutes);
+// app.use('/api/personal-tasks', personalTasksRoutes);
 
 // 헬스 체크 엔드포인트
 app.get('/health', (_req, res) => {
