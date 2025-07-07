@@ -9,31 +9,37 @@ import ForceGraph2D from 'react-force-graph-2d';
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement);
 
 interface DepartmentTask {
-  id: string;
-  department: string;     // 부서명
-  assignee: string;       // 담당자
-  type: string;           // 일정 유형 (회의, 실행, 검토 등)
-  delay: number;          // 응답 시간 (분)
-  start_time: Date;       // 시작 시간
-  end_time: Date;         // 종료 시간
-  status: string;         // 상태 (예: 완료, 대기 중 등)
-  duration: number;       // 소요시간 (분)
+  id: string;                  // 문서/일정 고유 ID
+  department: string;          // 부서명
+  assignee: string;            // 담당자(팀원)
+  task_owner: string;          // 일정 생성자
+  participants: string[];      // 일정 참여자 목록
+  type: string;                // 일정 유형(회의/실행/검토 등)
+  delay: number;               // 응답시간(분)
+  start_time: Date | string;   // 시작시간
+  end_time: Date | string;     // 종료시간
+  date: string;                // 일정 일자(YYYY-MM-DD 등)
+  status: string;              // 상태(완료, 진행중 등)
+  duration: number;            // 소요시간(분)
+  quality?: number;            // 품질점수(품질 vs 시간 차트용, 없는 경우도 있음)
+  emotion?: number;            // 감정점수(감정분석용, 없으면 제외)
+  [key: string]: any;          // 확장성(필요시 추가 필드)
 }
 
 export default function DepartmentAnalytics() {
-  const [tasks, setTasks] = useState<DepartmentTask[]>([]);
+  const [departmentTasks, setDepartmentTasks] = useState<DepartmentTask[]>([]);
 
   useEffect(() => {
     fetch('http://localhost:3001/api/analytics/department-tasks')
       .then(res => res.json())
-      .then((data: DepartmentTask[]) => setTasks(data))
+      .then((data: DepartmentTask[]) => setDepartmentTasks(data))
       .catch(console.error);
   }, []);
 
   //1번 차트 - 팀원별 응답시간
   const delayByAssignee = useMemo(() => {
     const delayMap: Record<string, { totalDelay: number; count: number }> = {};
-    tasks.forEach(({ assignee, delay }) => {
+    departmentTasks.forEach(({ assignee, delay }) => {
       if (!delayMap[assignee]) delayMap[assignee] = { totalDelay: 0, count: 0 };
       delayMap[assignee].totalDelay += delay;
       delayMap[assignee].count += 1;
@@ -52,12 +58,12 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [tasks]);
+  }, [departmentTasks]);
 
   //2번 차트: 일정 유형 파이차트
   const typePieData = useMemo(() => {
     const map: Record<string, number> = {};
-    tasks.forEach(({ type }) => {
+    departmentTasks.forEach(({ type }) => {
       map[type] = (map[type] || 0) + 1;
     });
   
@@ -74,7 +80,7 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [tasks]);
+  }, [departmentTasks]);
 
   //3번 차트: 시간대별 병목 히트맵
   const heatmapData = useMemo(() => {
@@ -87,7 +93,7 @@ export default function DepartmentAnalytics() {
       days.forEach(d => (map[tb][d] = 0));
     });
   
-    tasks.forEach(task => {
+    departmentTasks.forEach(task => {
       const start = new Date(task.start_time);
       const end = new Date(task.end_time);
       const day = days[start.getDay()];
@@ -110,13 +116,13 @@ export default function DepartmentAnalytics() {
   
     // 2차원 배열로 변환 (시간대 행, 요일 열)
     return timeBlocks.map(tb => days.map(d => map[tb][d]));
-  }, [tasks]);
+  }, [departmentTasks]);
 
   //4. 협업 네트워크 그래프
   const nodes = new Set<string>();
   const edges: { from: string; to: string }[] = [];
 
-  tasks.forEach(task => {
+  departmentTasks.forEach(task => {
     nodes.add(task.department);
     nodes.add(task.assignee);
     edges.push({ from: task.department, to: task.assignee });
@@ -131,7 +137,7 @@ export default function DepartmentAnalytics() {
   const deptTypeDuration = useMemo(() => {
     // 1. 부서와 유형별로 누적 시간 합산
     const map: Record<string, Record<string, number>> = {};
-    tasks.forEach(({ department, type, duration }) => {
+    departmentTasks.forEach(({ department, type, duration }) => {
       if (!map[department]) map[department] = {};
       map[department][type] = (map[department][type] || 0) + duration;
     });
@@ -139,7 +145,7 @@ export default function DepartmentAnalytics() {
     // 2. 부서/유형 모두 모으기
     const departments = Object.keys(map);
     const allTypes = Array.from(
-      new Set(tasks.map(task => task.type))
+      new Set(departmentTasks.map(task => task.type))
     );
   
     // 3. Chart.js 데이터셋 생성
@@ -151,12 +157,12 @@ export default function DepartmentAnalytics() {
     }));
   
     return { labels: departments, datasets };
-  }, [tasks]);
+  }, [departmentTasks]);
 
   //6. 팀원별 소요시간 분포 (BoxPlot)
   const execTimeStats = useMemo(() => {
     const map: Record<string, number[]> = {};
-    tasks.forEach(({ assignee, duration }) => {
+    departmentTasks.forEach(({ assignee, duration }) => {
       if (!map[assignee]) map[assignee] = [];
       map[assignee].push(duration);
     });
@@ -186,9 +192,74 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [tasks]);
+  }, [departmentTasks]);
+
+  //7번째 품질 vs 시간 산점도
+  const qualityScatter = useMemo(() => {
+    // quality라는 필드가 있다고 가정 (없으면 실제 필드명으로 교체)
+    return {
+      datasets: [
+        {
+          label: '품질 vs 시간',
+          data: departmentTasks
+            .filter(task => typeof task.duration === 'number' && typeof task.quality === 'number')
+            .map(task => ({ x: task.duration, y: task.quality })),
+          backgroundColor: '#3b82f6',
+        },
+      ],
+    };
+  }, [departmentTasks]);
   
-  
+  //8번 차트: 월별 작업량 라인차트
+  const monthlyCount = useMemo(() => {
+    const map: Record<string, number> = {};
+    departmentTasks.forEach(({ date }) => {
+      // date가 YYYY-MM-DD 형태라고 가정
+      const month = typeof date === 'string' ? date.slice(0, 7) : '';
+      if (month) map[month] = (map[month] || 0) + 1;
+    });
+    const labels = Object.keys(map).sort();
+    const data = labels.map(month => map[month]);
+    return {
+      labels,
+      datasets: [
+        {
+          label: '월별 작업량',
+          data,
+          fill: false,
+          borderColor: '#3b82f6',
+          backgroundColor: '#60a5fa',
+          tension: 0.4,
+        },
+      ],
+    };
+  }, [departmentTasks]);
+
+  //9번 차트: 월별 이슈(지연) 발생률 (late=1 기준)
+  const assignees = Array.from(new Set(departmentTasks.map(t => t.assignee)));
+  const types = Array.from(new Set(departmentTasks.map(t => t.type)));
+
+  const issueMatrix = useMemo(() => {
+    // 각 [담당자][유형]별로 late=1 건수 집계
+    const matrix: Record<string, Record<string, number>> = {};
+    assignees.forEach(a => {
+      matrix[a] = {};
+      types.forEach(t => (matrix[a][t] = 0));
+    });
+    departmentTasks.forEach(({ assignee, type, late }) => {
+      if (late === 1) matrix[assignee][type]++;
+    });
+    return matrix;
+  }, [departmentTasks]);
+
+  const groupedBarData = useMemo(() => ({
+    labels: assignees,
+    datasets: types.map((type, i) => ({
+      label: type,
+      data: assignees.map(a => issueMatrix[a][type]),
+      backgroundColor: ['#2563eb', '#f59e0b', '#10b981', '#6d28d9'][i % 4], // 파랑, 주황, 초록, 보라
+    })),
+  }), [assignees, types, issueMatrix]);
 
   return (
     <>
@@ -321,13 +392,7 @@ export default function DepartmentAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">품질 vs 시간</div>
           <Scatter
-            data={{
-              datasets: [
-                { label: '홍길동', data: [ {x:30,y:80},{x:60,y:85},{x:90,y:70} ], backgroundColor:'#3b82f6' },
-                { label: '김철수', data: [ {x:30,y:75},{x:60,y:80},{x:90,y:65} ], backgroundColor:'#10b981' },
-                { label: '이영희', data: [ {x:30,y:90},{x:60,y:95},{x:90,y:85} ], backgroundColor:'#f59e42' },
-              ]
-            }}
+            data={qualityScatter}
             options={{
               plugins: { legend: { position: 'top' } },
               scales: {
@@ -338,21 +403,12 @@ export default function DepartmentAnalytics() {
             height={180}
           />
         </div>
+
         {/* 8. 월별 작업량 라인차트 */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">월별 작업량</div>
           <Line
-            data={{
-              labels: ['2024-01','2024-02','2024-03','2024-04','2024-05','2024-06'],
-              datasets: [{
-                label: '작업 건수',
-                data: [20, 25, 30, 28, 35, 40],
-                borderColor: '#6366f1',
-                backgroundColor: 'rgba(99,102,241,0.1)',
-                fill: true,
-                tension: 0.4,
-              }],
-            }}
+            data={monthlyCount}
             options={{
               plugins: { legend: { display: false } },
               scales: { y: { beginAtZero: true, title: { display: true, text: '작업 건수' } } },
@@ -360,18 +416,12 @@ export default function DepartmentAnalytics() {
             height={180}
           />
         </div>
+
         {/* 9. 이슈 발생률 (막대그래프) */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">이슈 발생률</div>
           <Bar
-            data={{
-              labels: ['홍길동','김철수','이영희','박민수'],
-              datasets: [
-                { label: '업무', data: [2, 1, 0, 3], backgroundColor:'#3b82f6' },
-                { label: '회의', data: [1, 2, 1, 0], backgroundColor:'#f59e42' },
-                { label: '검토', data: [0, 1, 2, 1], backgroundColor:'#10b981' },
-              ]
-            }}
+            data={groupedBarData}
             options={{
               plugins: { legend: { position: 'bottom' } },
               scales: { y: { beginAtZero: true, title: { display: true, text: '지연 건수' } } },
