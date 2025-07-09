@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement } from 'chart.js';
 import { Doughnut, Line, Bar, Scatter } from 'react-chartjs-2';
 import dayjs from 'dayjs';
@@ -21,15 +21,33 @@ interface PersonalScheduleAnalysis {
   cumulative_completions: Record<string, number>;
 }
 
+const chartDescriptions = [
+  '일별 이행률: 각 날짜별로 전체 일정 중 완료된 일정의 비율을 보여줍니다.',
+  '요일×시간대 히트맵: 요일과 시간대별로 일정 완료율의 분포를 시각화합니다.',
+  '태그별 완료율: 일정에 부여된 태그별로 완료율을 비교합니다.',
+  '소요시간 분포: 일정별 소요시간의 분포를 보여줍니다.',
+  '감정 상태별 업무 수: 감정 상태(예: 긍정, 부정)별로 업무 건수를 집계합니다.',
+  '상태별 업무 수: 일정의 상태(예: 완료, 진행중 등)별로 업무 건수를 집계합니다.',
+  '시간대별 일정 건수: 시간대별로 생성된 일정의 건수를 보여줍니다.',
+  '누적 완료 추이: 일정 완료 건수의 누적 변화를 시계열로 보여줍니다.',
+  '시작/종료 시간 분포: 일정의 시작/종료 시간이 어떻게 분포되어 있는지 비교합니다.',
+  '태그별 평균 소요시간: 태그별로 평균 소요시간을 비교합니다.'
+];
+
 export default function PersonalAnalytics() {
   const [analyticsData, setAnalyticsData] = useState<PersonalScheduleAnalysis[]>([]);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
+  // 차트 ref 배열 (컴포넌트 함수 내부로 이동)
+  const chartRefs = Array.from({ length: 10 }, () => useRef<any>(null));
 
   useEffect(() => {
     fetch('http://localhost:3001/api/analytics/personalTasks')
       .then(res => res.json())
       .then((data: PersonalScheduleAnalysis[]) => {
-        setAnalyticsData(data);
+        // 데이터가 배열인지 확인하고 설정
+        const analyticsArray = Array.isArray(data) ? data : [];
+        setAnalyticsData(analyticsArray);
       })
       .catch(console.error);
   }, []);
@@ -38,27 +56,51 @@ export default function PersonalAnalytics() {
   const generateReport = async () => {
     setIsGeneratingReport(true);
     try {
-      // CSV 레포트 생성
-      const csvContent = [
-        ['날짜', '총 일정', '완료 일정', '완료율(%)', '평균 소요시간(분)'],
-        ...analyticsData.map(item => [
-          item.date,
-          item.total_schedules,
-          item.completed_schedules,
-          item.total_schedules > 0 ? ((item.completed_schedules / item.total_schedules) * 100).toFixed(1) : '0',
-          Object.values(item.completion_rate_by_tag).reduce((sum, tag) => sum + tag.avg_duration, 0) / Object.keys(item.completion_rate_by_tag).length || 0
-        ])
-      ].map(row => row.join(',')).join('\n');
+      if (!Array.isArray(analyticsData) || analyticsData.length === 0) {
+        console.error('분석 데이터가 없습니다.');
+        return;
+      }
 
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `personal-analytics-report-${dayjs().format('YYYY-MM-DD')}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      // 차트 이미지 추출
+      const chartImages = chartRefs.map(ref => {
+        if (ref.current && ref.current.toBase64Image) {
+          return ref.current.toBase64Image();
+        }
+        return null;
+      });
+
+      const response = await fetch('http://localhost:3001/api/analytics/generateReport', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          analyticsData,
+          chartDescriptions,
+          chartImages,
+          reportType: 'personal',
+          dateRange: {
+            start: analyticsData[0]?.date || dayjs().format('YYYY-MM-DD'),
+            end: analyticsData[analyticsData.length - 1]?.date || dayjs().format('YYYY-MM-DD')
+          }
+        }),
+      });
+
+      if (response.ok) {
+        const pdfBlob = await response.blob();
+        if (typeof window !== 'undefined') {
+          const pdfUrl = window.URL.createObjectURL(pdfBlob);
+          const pdfLink = document.createElement('a');
+          pdfLink.href = pdfUrl;
+          pdfLink.download = `personal-analytics-report-${dayjs().format('YYYY-MM-DD')}.pdf`;
+          document.body.appendChild(pdfLink);
+          pdfLink.click();
+          window.URL.revokeObjectURL(pdfUrl);
+          document.body.removeChild(pdfLink);
+        }
+      } else {
+        console.error('PDF 레포트 생성 실패:', response.statusText);
+      }
     } catch (error) {
       console.error('레포트 생성 실패:', error);
     } finally {
@@ -68,6 +110,10 @@ export default function PersonalAnalytics() {
 
   // Chart 1: 일별 완료율
   const dailyCompletion = useMemo(() => {
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) {
+      return { labels: [], data: [] };
+    }
+    
     const labels = analyticsData.map(item => dayjs(item.date).format('M/D'));
     const data = analyticsData.map(item => 
       item.total_schedules > 0 ? (item.completed_schedules / item.total_schedules) * 100 : 0
@@ -77,6 +123,10 @@ export default function PersonalAnalytics() {
 
   // Chart 2: 요일×시간대 히트맵 (시간대별 일정 건수 기반)
   const timeHeatmap = useMemo(() => {
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) {
+      return [];
+    }
+    
     const timeSlots = ['09:00-11:00', '11:00-13:00', '13:00-15:00', '15:00-17:00', '17:00-19:00'];
     const weekdays = ['월', '화', '수', '목', '금', '토', '일'];
     
@@ -90,9 +140,11 @@ export default function PersonalAnalytics() {
 
   // Chart 3: 태그별 완료율
   const tagStats = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], data: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], data: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.completion_rate_by_tag) return { labels: [], data: [] };
+    
     const labels = Object.keys(firstData.completion_rate_by_tag);
     const data = labels.map(tag => firstData.completion_rate_by_tag[tag].completion_rate * 100);
     
@@ -101,9 +153,11 @@ export default function PersonalAnalytics() {
 
   // Chart 4: 소요시간 분포
   const durationHistogram = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], data: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], data: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.duration_distribution) return { labels: [], data: [] };
+    
     const labels = Object.keys(firstData.duration_distribution);
     const data = Object.values(firstData.duration_distribution);
     
@@ -112,9 +166,11 @@ export default function PersonalAnalytics() {
 
   // Chart 5: 감정 상태별 업무 수
   const emotionStats = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], data: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], data: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.task_count_by_emotion) return { labels: [], data: [] };
+    
     const labels = Object.keys(firstData.task_count_by_emotion);
     const data = Object.values(firstData.task_count_by_emotion);
     
@@ -123,9 +179,11 @@ export default function PersonalAnalytics() {
 
   // Chart 6: 상태별 업무 수
   const statusStats = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], data: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], data: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.task_count_by_status) return { labels: [], data: [] };
+    
     const labels = Object.keys(firstData.task_count_by_status);
     const data = Object.values(firstData.task_count_by_status);
     
@@ -134,9 +192,11 @@ export default function PersonalAnalytics() {
 
   // Chart 7: 시간대별 일정 건수
   const timeSlotStats = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], data: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], data: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.schedule_count_by_time_slot) return { labels: [], data: [] };
+    
     const labels = Object.keys(firstData.schedule_count_by_time_slot);
     const data = Object.values(firstData.schedule_count_by_time_slot);
     
@@ -145,12 +205,21 @@ export default function PersonalAnalytics() {
 
   // Chart 8: 누적 완료 추이
   const cumulativeCompletion = useMemo(() => {
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) {
+      return { labels: [], datasets: [] };
+    }
+    
     const sortedData = [...analyticsData].sort((a, b) => 
       dayjs(a.date).unix() - dayjs(b.date).unix()
     );
     
     const labels = sortedData.map(item => dayjs(item.date).format('M/D'));
-    const data = sortedData.map(item => item.cumulative_completions[Object.keys(item.cumulative_completions)[0]] || 0);
+    const data = sortedData.map(item => {
+      const cumulativeData = item.cumulative_completions;
+      return cumulativeData && Object.keys(cumulativeData).length > 0 
+        ? cumulativeData[Object.keys(cumulativeData)[0]] || 0 
+        : 0;
+    });
     
     return {
       labels,
@@ -169,9 +238,13 @@ export default function PersonalAnalytics() {
 
   // Chart 9: 시작/종료 시간 분포 비교
   const timeDistributionComparison = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], datasets: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], datasets: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.start_time_distribution || !firstData.end_time_distribution) {
+      return { labels: [], datasets: [] };
+    }
+    
     const labels = Object.keys(firstData.start_time_distribution);
     
     return {
@@ -195,9 +268,11 @@ export default function PersonalAnalytics() {
 
   // Chart 10: 태그별 평균 소요시간
   const avgDurationByTag = useMemo(() => {
-    if (analyticsData.length === 0) return { labels: [], data: [] };
+    if (!Array.isArray(analyticsData) || analyticsData.length === 0) return { labels: [], data: [] };
     
     const firstData = analyticsData[0];
+    if (!firstData || !firstData.completion_rate_by_tag) return { labels: [], data: [] };
+    
     const labels = Object.keys(firstData.completion_rate_by_tag);
     const data = labels.map(tag => firstData.completion_rate_by_tag[tag].avg_duration);
     
@@ -261,6 +336,7 @@ export default function PersonalAnalytics() {
           <div className="font-semibold mb-3 text-[#22223b]">일별 이행률</div>
           <div className="flex-1 flex items-center">
             <Line 
+              ref={chartRefs[0]}
               data={{ 
                 labels: dailyCompletion.labels, 
                 datasets: [{ 
@@ -316,6 +392,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">태그별 완료율</div>
           <Bar
+            ref={chartRefs[2]}
             data={{
               labels: tagStats.labels,
               datasets: [{
@@ -336,6 +413,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">소요시간 분포</div>
           <Bar
+            ref={chartRefs[3]}
             data={{
               labels: durationHistogram.labels,
               datasets: [{
@@ -356,6 +434,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">감정 상태별 업무 수</div>
           <Bar
+            ref={chartRefs[4]}
             data={{
               labels: emotionStats.labels,
               datasets: [{
@@ -376,6 +455,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">상태별 업무 수</div>
           <Bar
+            ref={chartRefs[5]}
             data={{
               labels: statusStats.labels,
               datasets: [{
@@ -396,6 +476,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">시간대별 일정 건수</div>
           <Bar
+            ref={chartRefs[6]}
             data={{
               labels: timeSlotStats.labels,
               datasets: [{
@@ -416,6 +497,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">누적 완료 추이</div>
           <Line
+            ref={chartRefs[7]}
             data={cumulativeCompletion}
             options={{
               plugins: { legend: { display: false } },
@@ -429,6 +511,7 @@ export default function PersonalAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">시작/종료 시간 분포</div>
           <Bar
+            ref={chartRefs[8]}
             data={timeDistributionComparison}
             options={{
               plugins: { legend: { position: 'bottom' } },

@@ -4,30 +4,36 @@ import { useEffect, useMemo, useState } from 'react';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement } from 'chart.js';
 import { Doughnut, Line, Bar, Scatter, Pie } from 'react-chartjs-2';
 import dayjs from 'dayjs';
-import ForceGraph2D from 'react-force-graph-2d';
+import dynamic from 'next/dynamic';
 // import SankeyDiagram from './SankeyDiagram';
 import { Chart as GoogleChart } from 'react-google-charts';
 
+// ForceGraph2D를 동적 import로 변경하여 SSR 오류 방지
+const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
+  ssr: false,
+  loading: () => <div className="flex items-center justify-center h-64 bg-gray-50 rounded-lg">네트워크 그래프 로딩 중...</div>
+});
+
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement);
 
-export interface CompanyTasks {
-  id: string;               // 지표 고유 ID
-  department: string;       // 부서명 (전체는 '*')
-  date: string;             // 집계 날짜 (yyyy-mm-dd)
-  month: string;            // 월 단위 집계 (YYYY-MM)
-  hours: number;            // 시간 투입 (분 단위)
-  revenue: number;          // 매출 금액
-  prod: number;             // 생산성 지표 수치
-  fatigue: number;          // 피로도 지표 수치
-  CS_count: number;         // 고객 문의 건수
-  ROI: number;              // ROI (%)
-  source: string;           // Sankey 출발 노드명
-  target: string;           // Sankey 도착 노드명
-  value: number;            // Sankey 흐름 값
+// CompanyScheduleAnalysis 스키마에 맞는 인터페이스
+interface CompanyScheduleAnalysis {
+  schedule_id: string;                                    // 회사 일정 고유 아이디
+  analysis_start_date: string;                           // 분석 기간 시작일
+  analysis_end_date: string;                             // 분석 기간 종료일
+  total_schedules: number;                               // 총 일정 건수
+  schedule_duration_distribution: Record<string, number>; // 일정 기간별 분포
+  time_slot_distribution: Record<string, number>;        // 시간대별 분포
+  attendee_participation_counts: Record<string, number>; // 참석자별 참여 횟수
+  organizer_schedule_counts: Record<string, number>;     // 주최 기관별 일정 수
+  supporting_organization_collaborations: Record<string, string[]>; // 협조 기관별 협력 횟수
+  monthly_schedule_counts: Record<string, number>;       // 월별 일정 건수 추이
+  schedule_category_ratio: Record<string, number>;       // 일정 카테고리별 비율
+  updated_at: string;                                    // 갱신 일시
 }
 
-export default function ProjectAnalytics() {
-  const [companyMetrics, setCompanyMetrics] = useState<CompanyTasks[]>([]);
+export default function CompanyAnalytics() {
+  const [companyAnalysis, setCompanyAnalysis] = useState<CompanyScheduleAnalysis[]>([]);
 
   const getRecent6Months = () => {
     const arr: string[] = [];
@@ -39,459 +45,402 @@ export default function ProjectAnalytics() {
   };
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/company-tasks')
+    fetch('http://localhost:3001/api/analytics/companyTasks')
       .then(res => res.json())
-      .then((data: CompanyTasks[]) => setCompanyMetrics(data))
+      .then((data: CompanyScheduleAnalysis[]) => {
+        // 데이터가 배열인지 확인하고 설정
+        const analysisArray = Array.isArray(data) ? data : [];
+        setCompanyAnalysis(analysisArray);
+      })
       .catch(console.error);
   }, []);
 
-  const departments = Array.from(new Set(companyMetrics.map((d: any) => d.department)));
+  // 첫 번째 분석 데이터 가져오기 (가장 최근 데이터)
+  const firstData = useMemo(() => {
+    if (!Array.isArray(companyAnalysis) || companyAnalysis.length === 0) {
+      return null;
+    }
+    return companyAnalysis[0];
+  }, [companyAnalysis]);
 
-  //1. 부서별 시간당 매출 산점도
-  const scatterByDept = useMemo(() => ({
-    datasets: departments.map((dept, i) => ({
-      label: dept,
-      data: companyMetrics
-        .filter((row: any) => row.department === dept)
-        .map((row: any) => ({
-          x: row.hours,
-          y: row.revenue,
-        })),
-      backgroundColor: ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#6d28d9'][i % 5], // 파랑, 초록, 주황, 빨강, 보라
-      pointRadius: 2,
-      pointHoverRadius: 3,
-    })),
-  }), [companyMetrics, departments]);
+  //1. 일정 기간별 분포 (파이차트)
+  const durationDistribution = useMemo(() => {
+    if (!firstData || !firstData.schedule_duration_distribution) {
+      return { labels: [], datasets: [] };
+    }
 
-  //2. 피로도×생산성 버블차트
-  const bubbleByDept = useMemo(() => ({
-    datasets: departments.map((dept, i) => ({
-      label: dept,
-      data: companyMetrics
-        .filter((row: any) => row.department === dept)
-        .map((row: any) => ({
-          x: row.prod,      // X: 생산성
-          y: row.fatigue,   // Y: 피로도
-          r: Math.sqrt(row.hours), // 버블크기(시간)
-        })),
-      backgroundColor: ['#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6'][i % 5], // 부서별 색상
-      borderColor: ['#2563eb', '#059669', '#b45309', '#6d28d9', '#be185d'][i % 5],
-      // borderWidth: 1.5,
-      pointRadius: 2,
-      pointHoverRadius: 3,
-    })),
-  }), [companyMetrics, departments]);
-
-  //3. 월별 듀얼라인차트 (생산성 vs 피로도)
-  const months_3 = getRecent6Months();
-  const monthlyDualLine = useMemo(() => {
-    // { '1월': { prod:[], fatigue:[] }, ... }
-    const map: Record<string, { prod: number[]; fatigue: number[] }> = {};
-    companyMetrics.forEach((row: any) => {
-      const month = row.month;
-      if (!month) return;
-      if (!map[month]) map[month] = { prod: [], fatigue: [] };
-      if (typeof row.prod === 'number') map[month].prod.push(row.prod);
-      if (typeof row.fatigue === 'number') map[month].fatigue.push(row.fatigue);
-    });
+    const labels = Object.keys(firstData.schedule_duration_distribution);
+    const data = Object.values(firstData.schedule_duration_distribution);
 
     return {
-      labels: months_3,
+      labels,
       datasets: [
         {
-          label: '생산성',
-          data: months_3.map(m => map[m]?.prod?.length
-            ? Math.round(map[m].prod.reduce((a, b) => a + b, 0) / map[m].prod.length)
-            : null),
-          borderColor: '#2563eb',
-          backgroundColor: '#2563eb11',
-          borderWidth: 3,
-          pointBackgroundColor: '#fff',
-          pointBorderColor: '#2563eb',
-          pointRadius: 5,
-          fill: false,
-          tension: 0.3,
-          yAxisID: 'y',
-        },
-        {
-          label: '피로도',
-          data: months_3.map(m => map[m]?.fatigue?.length
-            ? Math.round(map[m].fatigue.reduce((a, b) => a + b, 0) / map[m].fatigue.length)
-            : null),
-          borderColor: '#f87171',
-          backgroundColor: '#f8717111',
-          borderWidth: 3,
-          pointBackgroundColor: '#fff',
-          pointBorderColor: '#f87171',
-          pointRadius: 5,
-          fill: false,
-          tension: 0.3,
-          yAxisID: 'y1',
+          label: '일정 기간별 분포',
+          data,
+          backgroundColor: ['#10b981', '#f59e0b', '#3b82f6', '#ef4444', '#8b5cf6'],
         },
       ],
     };
-  }, [companyMetrics]);
+  }, [firstData]);
 
-  //4. Sankey 다이어그램
-  const sankeyData = useMemo(() => {
-    // 구글 차트 Sankey는 [from, to, value] 배열 필요, 첫 row는 헤더
-    const rows = companyMetrics
-      .filter((row: any) => row.source && row.target && typeof row.value === 'number')
-      .map((row: any) => [row.source, row.target, row.value]);
-    return [
-      ['From', 'To', 'Value'],
-      ...rows,
-    ];
-  }, [companyMetrics]);
+  //2. 시간대별 분포 (막대그래프)
+  const timeSlotDistribution = useMemo(() => {
+    if (!firstData || !firstData.time_slot_distribution) {
+      return { labels: [], datasets: [] };
+    }
 
-  //5. 부서별 매출 막대그래프
-  const deptColors = ['#2563eb', '#10b981', '#f59e42', '#6366f1', '#a3e635'];
+    const labels = Object.keys(firstData.time_slot_distribution);
+    const data = Object.values(firstData.time_slot_distribution);
 
-  const deptRevenue = useMemo(() => {
-  const map: Record<string, number> = {};
-  companyMetrics.forEach((row: any) => {
-    const dept = row.department;
-    if (!dept) return;
-    if (!map[dept]) map[dept] = 0;
-    if (typeof row.revenue === 'number') map[dept] += row.revenue;
-  });
-  const labels = Object.keys(map);
-  const data = labels.map(dept => map[dept]);
-  return {
-    labels,
-    datasets: [
-      {
-        label: '매출(만원)',
-        data,
-        backgroundColor: labels.map((_, i) => deptColors[i % deptColors.length]),
-        // borderRadius: 8,
-        barPercentage: 0.6,
-      },
-    ],
-  };
-}, [companyMetrics]);
+    return {
+      labels,
+      datasets: [
+        {
+          label: '시간대별 일정 수',
+          data,
+          backgroundColor: '#3b82f6',
+        },
+      ],
+    };
+  }, [firstData]);
 
-//6. CS 건수 히스토그램
-// 원하면 bins[]을 더 세분화/확대 가능
-const bins = [0, 10, 20, 30, 40, 50];
+  //3. 참석자별 참여 횟수 (막대그래프)
+  const attendeeParticipation = useMemo(() => {
+    if (!firstData || !firstData.attendee_participation_counts) {
+      return { labels: [], datasets: [] };
+    }
 
-const csHistogram = useMemo(() => {
-  // CS_count 값만 추출
-  const values = companyMetrics
-    .map((row: any) => Number(row.CS_count))
-    .filter((n: number) => !isNaN(n));
+    const labels = Object.keys(firstData.attendee_participation_counts);
+    const data = Object.values(firstData.attendee_participation_counts);
 
-  // 구간별 집계
-  const counts = bins.map((bin, i) => {
-    if (i === bins.length - 1) return null;
-    return values.filter(v => v >= bin && v < bins[i + 1]).length;
-  }).filter(x => x !== null);
+    return {
+      labels,
+      datasets: [
+        {
+          label: '참여 횟수',
+          data,
+          backgroundColor: '#10b981',
+        },
+      ],
+    };
+  }, [firstData]);
 
-  // 레이블(구간)
-  const labels = bins.slice(0, -1).map((b, i) => `${b}~${bins[i + 1] - 1}`);
+  //4. 협조 기관 네트워크 그래프
+  const collaborationNetwork = useMemo(() => {
+    if (!firstData || !firstData.supporting_organization_collaborations) {
+      return { nodes: [], links: [] };
+    }
 
-  return {
-    labels,
-    datasets: [
-      {
-        label: 'CS 건수',
-        data: counts,
-        backgroundColor: '#3b82f6',
-        borderRadius: 6,
-        barPercentage: 0.8,
-      },
-    ],
-  };
-}, [companyMetrics]);
+    const nodes = new Set<string>();
+    const edges: { from: string; to: string }[] = [];
 
-//7. 부서별 피로도 박스플롯 (바형태로 대체)
-const deptList = Array.from(new Set(companyMetrics.map((row: any) => row.department)));
+    Object.entries(firstData.supporting_organization_collaborations).forEach(([organization, collaborators]) => {
+      nodes.add(organization);
+      
+      // collaborators가 배열인지 확인하고 안전하게 처리
+      if (Array.isArray(collaborators)) {
+        collaborators.forEach(collaborator => {
+          if (typeof collaborator === 'string') {
+            nodes.add(collaborator);
+            edges.push({ from: organization, to: collaborator });
+          }
+        });
+      } else if (typeof collaborators === 'string') {
+        // collaborators가 단일 문자열인 경우
+        nodes.add(collaborators);
+        edges.push({ from: organization, to: collaborators });
+      } else if (typeof collaborators === 'object' && collaborators !== null) {
+        // collaborators가 객체인 경우
+        Object.keys(collaborators).forEach(collaborator => {
+          if (typeof collaborator === 'string') {
+            nodes.add(collaborator);
+            edges.push({ from: organization, to: collaborator });
+          }
+        });
+      }
+    });
 
-const fatigueByDept = useMemo(() => {
-  // 부서별 fatigue 집계
-  const map: Record<string, number[]> = {};
-  companyMetrics.forEach((row: any) => {
-    const dept = row.department;
-    if (!dept) return;
-    if (!map[dept]) map[dept] = [];
-    if (typeof row.fatigue === 'number') map[dept].push(row.fatigue);
-  });
-  const labels = deptList;
-  const minArr = labels.map(dept =>
-    map[dept]?.length ? Math.min(...map[dept]) : null
-  );
-  const avgArr = labels.map(dept =>
-    map[dept]?.length ? Math.round(map[dept].reduce((a, b) => a + b, 0) / map[dept].length) : null
-  );
-  const maxArr = labels.map(dept =>
-    map[dept]?.length ? Math.max(...map[dept]) : null
-  );
-  return {
-    labels,
-    datasets: [
-      {
-        label: '최소',
-        data: minArr,
-        backgroundColor: '#c7d2fe',
-      },
-      {
-        label: '평균',
-        data: avgArr,
-        backgroundColor: '#60a5fa',
-      },
-      {
-        label: '최대',
-        data: maxArr,
-        backgroundColor: '#1e40af',
-      },
-    ],
-  };
-}, [companyMetrics, deptList]);
+    return {
+      nodes: Array.from(nodes).map(id => ({ id })),
+      links: edges.map(e => ({ source: e.from, target: e.to })),
+    };
+  }, [firstData]);
 
-//8. 조직 활용도 면적차트
-const months_8 = Array.from({ length: 6 }, (_, i) =>
-  dayjs().subtract(5 - i, 'month').format('M월')
-);
-const departments_8 = Array.from(
-  new Set(companyMetrics.map((row: any) => row.department))
-);
+  //5. 주최 기관별 일정 수 (막대그래프)
+  const organizerScheduleCounts = useMemo(() => {
+    if (!firstData || !firstData.organizer_schedule_counts) {
+      return { labels: [], datasets: [] };
+    }
 
-const areaUtilization = useMemo(() => {
-  // 월별, 부서별 hours 합산
-  const map: Record<string, Record<string, number>> = {};
-  months_8.forEach(month => {
-    map[month] = {};
-    departments_8.forEach(dept => (map[month][dept] = 0));
-  });
-  companyMetrics.forEach((row: any) => {
-    const month = row.month;
-    const dept = row.department;
-    if (!month || !dept) return;
-    if (!map[month]) map[month] = {};
-    if (!map[month][dept]) map[month][dept] = 0;
-    if (typeof row.hours === 'number') map[month][dept] += row.hours;
-  });
+    const labels = Object.keys(firstData.organizer_schedule_counts);
+    const data = Object.values(firstData.organizer_schedule_counts);
 
-  // 색상 지정 (이미지 참고: 파랑, 초록, 주황)
-  const colors = ['#3b82f6', '#10b981', '#f59e42', '#6366f1'];
+    return {
+      labels,
+      datasets: [
+        {
+          label: '일정 수',
+          data,
+          backgroundColor: '#f59e0b',
+        },
+      ],
+    };
+  }, [firstData]);
 
-  return {
-    labels: months_8,
-    datasets: departments_8.map((dept, i) => ({
-      label: dept,
-      data: months_8.map(month => map[month][dept]),
-      borderColor: colors[i % colors.length],
-      backgroundColor: `${colors[i % colors.length]}33`, // 연한 면적색
-      fill: true,
-      tension: 0.3,
-      pointRadius: 4,
-      borderWidth: 2,
-    })),
-  };
-}, [companyMetrics]);
+  //6. 일정 카테고리별 비율 (도넛차트)
+  const categoryRatio = useMemo(() => {
+    if (!firstData || !firstData.schedule_category_ratio) {
+      return { labels: [], datasets: [] };
+    }
 
-//9. ROI 선그래프
-// 최근 6개월(1월~6월 등) 라벨
-const months = Array.from({ length: 6 }, (_, i) =>
-  dayjs().subtract(5 - i, 'month').format('M월')
-);
+    const labels = Object.keys(firstData.schedule_category_ratio);
+    const data = Object.values(firstData.schedule_category_ratio);
 
-const monthlyROI = useMemo(() => {
-  // { '1월': ROI, ... }
-  const map: Record<string, number> = {};
-  companyMetrics.forEach((row: any) => {
-    const month = row.month;
-    if (!month) return;
-    if (typeof row.ROI === 'number') map[month] = row.ROI;
-  });
+    return {
+      labels,
+      datasets: [
+        {
+          label: '카테고리별 비율',
+          data,
+          backgroundColor: ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'],
+        },
+      ],
+    };
+  }, [firstData]);
 
-  return {
-    labels: months,
-    datasets: [
-      {
-        label: 'ROI',
-        data: months.map(m => map[m] ?? null),
-        borderColor: '#6366f1',
-        backgroundColor: '#6366f133',
-        borderWidth: 3,
-        pointBackgroundColor: '#fff',
-        pointBorderColor: '#6366f1',
-        pointRadius: 5,
-        fill: true,
-        tension: 0.4,
-      },
-    ],
-  };
-}, [companyMetrics]);
+  //7. 월별 일정 건수 추이 (라인차트)
+  const monthlyScheduleCounts = useMemo(() => {
+    if (!firstData || !firstData.monthly_schedule_counts) {
+      return { labels: [], datasets: [] };
+    }
+
+    const labels = Object.keys(firstData.monthly_schedule_counts).sort();
+    const data = labels.map(month => firstData.monthly_schedule_counts[month] || 0);
+
+    return {
+      labels,
+      datasets: [
+        {
+          label: '월별 일정 건수',
+          data,
+          borderColor: '#6366f1',
+          backgroundColor: '#6366f133',
+          borderWidth: 3,
+          pointBackgroundColor: '#fff',
+          pointBorderColor: '#6366f1',
+          pointRadius: 5,
+          fill: true,
+          tension: 0.4,
+        },
+      ],
+    };
+  }, [firstData]);
+
+  //8. 일정 기간 vs 참여자 수 산점도
+  const durationVsParticipants = useMemo(() => {
+    if (!firstData || !firstData.schedule_duration_distribution || !firstData.attendee_participation_counts) {
+      return { datasets: [] };
+    }
+
+    const durationKeys = Object.keys(firstData.schedule_duration_distribution);
+    const attendeeKeys = Object.keys(firstData.attendee_participation_counts);
+    
+    // 두 데이터를 매칭하여 산점도 데이터 생성
+    const data = durationKeys.map(duration => {
+      const durationValue = firstData.schedule_duration_distribution[duration];
+      const attendeeValue = firstData.attendee_participation_counts[duration] || 0;
+      return {
+        x: durationValue,
+        y: attendeeValue,
+      };
+    });
+
+    return {
+      datasets: [
+        {
+          label: '기간 vs 참여자',
+          data,
+          backgroundColor: '#3b82f6',
+          pointRadius: 6,
+        },
+      ],
+    };
+  }, [firstData]);
+
+  //9. 총 일정 건수 및 통계 요약 (커스텀 카드)
+  const summaryStats = useMemo(() => {
+    if (!firstData) {
+      return {
+        totalSchedules: 0,
+        totalAttendees: 0,
+        totalOrganizers: 0,
+        analysisPeriod: '',
+      };
+    }
+
+    const totalAttendees = Object.values(firstData.attendee_participation_counts || {}).reduce((sum, count) => sum + count, 0);
+    const totalOrganizers = Object.keys(firstData.organizer_schedule_counts || {}).length;
+    const analysisPeriod = `${firstData.analysis_start_date} ~ ${firstData.analysis_end_date}`;
+
+    return {
+      totalSchedules: firstData.total_schedules || 0,
+      totalAttendees,
+      totalOrganizers,
+      analysisPeriod,
+    };
+  }, [firstData]);
 
   return (
     <>
       {/* 3x3 그리드: 9개 회사 일정 분석 차트 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
-        {/* 1. 부서별 시간당 매출 산점도 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">부서별 시간당 매출</div>
-          <div className="flex-1 flex items-center">
-            <Scatter
-              data={scatterByDept}
-              options={{
-                plugins: { legend: { position: 'top' } },
-                scales: {
-                  x: { title: { display: true, text: '투입시간(시간)' } },
-                  y: { title: { display: true, text: '매출(만원)' } },
-                },
-              }}
-            />
-          </div>
-        </div>
-
-        {/* 2. 피로도×생산성 버블차트 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">피로도×생산성(버블)</div>
-          <div className="flex-1 flex items-center">
-            <Scatter
-              data={bubbleByDept}
-              options={{
-                plugins: { legend: { position: 'top' } },
-                scales: {
-                  x: { title: { display: true, text: '생산성' } },
-                  y: { title: { display: true, text: '피로도' } },
-                },
-                elements: { point: { borderWidth: 1, borderColor: '#fff' } },
-              }}
-            />
-          </div>
-        </div>
-
-        {/* 3. 월별 듀얼라인차트 (생산성 vs 피로도) */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">월별 생산성 vs 피로도</div>
-          <div className="flex-1 flex items-center">
-            <Line
-              data={monthlyDualLine}
-              options={{
-                plugins: { legend: { position: 'top' } },
-                responsive: true,
-                scales: {
-                  x: { title: { display: true, text: '월' } },
-                  y: { 
-                    title: { display: true, text: '생산성' },
-                    min: 0, max: 100, position: 'left', grid: { drawOnChartArea: true }
-                  },
-                  y1: {
-                    title: { display: true, text: '피로도' },
-                    min: 0, max: 100, position: 'right', grid: { drawOnChartArea: false }
-                  },
-                },
-              }}
-            />
-          </div>
-        </div>
-        
-        {/* 4. Sankey 다이어그램 (플레이스홀더) */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px] items-center justify-center">
-          <div className="font-semibold mb-3 text-[#22223b]">Sankey 다이어그램</div>
-          <div className="w-full flex items-center justify-center">
-          <GoogleChart
-            chartType="Sankey"
-            width="100%"
-            height="300px"
-            data={sankeyData}
-            options={{
-              sankey: {
-                node: {
-                  colors: ['#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6'],
-                  label: { fontSize: 16, bold: true },
-                  nodePadding: 28,
-                  labelPadding: 10,
-                },
-                link: {
-                  colorMode: 'source',
-                  fillOpacity: 0.4,
-                },
-              },
-            }}
-          />
-          </div>
-        </div>
-        
-        {/* 5. 부서별 매출 막대그래프 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">부서별 매출</div>
-          <div className="flex-1 flex items-center">
-            <Bar
-              data={deptRevenue}
-              options={{
-                plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: '매출(만원)' } } },
-              }}
-            />
-          </div>
-        </div>
-
-        {/* 6. CS 건수 히스토그램 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">CS 건수 분포</div>
-          <div className="flex-1 flex items-center">
-            <Bar
-              data={{
-                labels: ['0~10','10~20','20~30','30~40','40~50'],
-                datasets: [{
-                  label: '부서 수',
-                  data: [2, 5, 8, 3, 1],
-                  backgroundColor: '#6366f1',
-                }],
-              }}
-              options={{
-                plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: '부서 수' } } },
-              }}
-            />
-          </div>
-        </div>
-        
-        {/* 7. 부서별 피로도 박스플롯 (바형태로 대체) */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">부서별 피로도</div>
-          <div className="flex-1 flex items-center">
-            <Bar
-              data={fatigueByDept}
+        {/* 1. 일정 기간별 분포 (파이차트) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center">
+          <div className="font-semibold mb-3 text-[#22223b]">일정 기간별 분포</div>
+          <div className="w-[270px] h-[270px] flex items-center justify-center">
+            <Pie
+              data={durationDistribution}
               options={{
                 plugins: { legend: { position: 'bottom' } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: '피로도' } } },
               }}
             />
           </div>
         </div>
 
-        {/* 8. 조직 활용도 면적차트 */}
+        {/* 2. 시간대별 분포 (막대그래프) */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">조직 활용도(면적)</div>
+          <div className="font-semibold mb-3 text-[#22223b]">시간대별 일정 분포</div>
           <div className="flex-1 flex items-center">
-            <Line
-              data={areaUtilization}
-              options={{
-                plugins: { legend: { position: 'top' } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: '투입시간' } } },
-              }}
-            />
-          </div>
-        </div>
-
-        {/* 9. ROI 선그래프 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">월별 ROI</div>
-          <div className="flex-1 flex items-center">
-            <Line
-              data={monthlyROI}
+            <Bar
+              data={timeSlotDistribution}
               options={{
                 plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true, title: { display: true, text: 'ROI' } } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '일정 수' } } },
               }}
             />
           </div>
         </div>
 
+        {/* 3. 참석자별 참여 횟수 (막대그래프) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">참석자별 참여 횟수</div>
+          <div className="flex-1 flex items-center">
+            <Bar
+              data={attendeeParticipation}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '참여 횟수' } } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 4. 협조 기관 네트워크 그래프 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center justify-center min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">협조 기관 네트워크</div>
+          <div className="w-full flex-1 flex items-center justify-center" style={{height:250}}>
+            <ForceGraph2D
+              graphData={collaborationNetwork}
+              nodeLabel={(node: any) => node.id}
+              nodeAutoColorBy="group"
+              linkDirectionalParticles={2}
+              linkDirectionalParticleWidth={2}
+              width={250}
+              height={250}
+              nodeCanvasObject={(node: any, ctx, globalScale) => {
+                const label = node.id;
+                const fontSize = 12 / globalScale;
+                ctx.font = `${fontSize}px Sans-Serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillStyle = '#22223b';
+                ctx.fillText(label, node.x, node.y + 8);
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 5. 주최 기관별 일정 수 (막대그래프) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">주최 기관별 일정 수</div>
+          <div className="flex-1 flex items-center">
+            <Bar
+              data={organizerScheduleCounts}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '일정 수' } } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 6. 일정 카테고리별 비율 (도넛차트) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center">
+          <div className="font-semibold mb-3 text-[#22223b]">일정 카테고리별 비율</div>
+          <div className="w-[270px] h-[270px] flex items-center justify-center">
+            <Doughnut
+              data={categoryRatio}
+              options={{
+                plugins: { legend: { position: 'bottom' } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 7. 월별 일정 건수 추이 (라인차트) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">월별 일정 건수 추이</div>
+          <div className="flex-1 flex items-center">
+            <Line
+              data={monthlyScheduleCounts}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '일정 건수' } } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 8. 일정 기간 vs 참여자 수 산점도 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">기간 vs 참여자 수</div>
+          <div className="flex-1 flex items-center">
+            <Scatter
+              data={durationVsParticipants}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { title: { display: true, text: '일정 기간' } },
+                  y: { title: { display: true, text: '참여자 수' } },
+                },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 9. 통계 요약 카드 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col justify-center">
+          <div className="font-semibold mb-4 text-[#22223b] text-center">분석 요약</div>
+          <div className="space-y-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-blue-600">{summaryStats.totalSchedules}</div>
+              <div className="text-sm text-gray-600">총 일정 건수</div>
+            </div>
+            <div className="text-center">
+              <div className="text-xl font-semibold text-green-600">{summaryStats.totalAttendees}</div>
+              <div className="text-sm text-gray-600">총 참석자 수</div>
+            </div>
+            <div className="text-center">
+              <div className="text-xl font-semibold text-orange-600">{summaryStats.totalOrganizers}</div>
+              <div className="text-sm text-gray-600">주최 기관 수</div>
+            </div>
+            <div className="text-center pt-2 border-t">
+              <div className="text-xs text-gray-500">{summaryStats.analysisPeriod}</div>
+              <div className="text-xs text-gray-500">분석 기간</div>
+            </div>
+          </div>
+        </div>
       </div>
     </>
   );

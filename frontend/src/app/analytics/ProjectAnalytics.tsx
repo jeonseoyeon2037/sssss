@@ -4,28 +4,34 @@ import { useEffect, useMemo, useState } from 'react';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement } from 'chart.js';
 import { Doughnut, Line, Bar, Scatter, Pie } from 'react-chartjs-2';
 import dayjs from 'dayjs';
-import ForceGraph2D from 'react-force-graph-2d';
+import dynamic from 'next/dynamic';
 import GanttChart from './GanttChart';
 import PertNetworkChart from './PertNetworkChart';
 
+// ForceGraph2D를 동적 import로 변경하여 SSR 오류 방지
+const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
+  ssr: false,
+  loading: () => <div className="flex items-center justify-center h-64 bg-gray-50 rounded-lg">네트워크 그래프 로딩 중...</div>
+});
+
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement);
 
-
-export interface ProjectTask {
-  id: string;              // 업무 ID
-  project_id: string;      // 프로젝트 ID
-  name: string;            // 업무명
-  assignee: string;        // 담당자
-  type: string;            // 업무유형(예: 개발, 기획 등)
-  status: string;          // 상태(진행중, 완료 등)
-  start_date: string;      // 시작일(YYYY-MM-DD 등)
-  end_date: string;        // 종료일(YYYY-MM-DD 등)
-  duration: number;        // 소요시간(분 또는 시간)
-  progress: number;        // 진행률(%)
-  output?: string;         // 산출물/결과(선택)
-  dependency?: string[];   // 의존업무ID 배열(선택)
-  created_at?: Date;       // 생성일시(선택)
-  updated_at?: Date;       // 수정일시(선택)
+// ProjectScheduleAnalysis 스키마에 맞는 인터페이스
+interface ProjectScheduleAnalysis {
+  project_id: string;                           // 프로젝트 ID
+  date: string;                                 // 분석 날짜
+  task_list: string[];                          // 작업 리스트
+  start_dates: Record<string, string>;          // 시작일 리스트
+  durations: Record<string, number>;            // 단계별 기간
+  dependencies: Record<string, string[]>;       // 작업 간 종속 관계
+  planned_completion_dates: Record<string, string>; // 계획 완료일 리스트
+  actual_completion_dates: Record<string, string>;  // 실제 완료일 리스트
+  simulation_completion_dates: string[];        // 완료일 시뮬레이션
+  progress: Record<string, number>;             // 단계별 진행률
+  delay_times: Record<string, number>;          // 단계별 지연 시간
+  intervals: Record<string, number>;            // 단계 간 간격
+  cumulative_budget: Record<string, number>;    // 예산 누적 소모
+  stage_status: Record<string, string>;         // 단계별 상태 (완료, 진행, 지연)
 }
 
 const ganttProjects = [
@@ -69,285 +75,209 @@ const ganttProjects = [
 
 export default function ProjectAnalytics() {
   const [selectedProjectId, setSelectedProjectId] = useState(ganttProjects[0].id);
-  const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
-  const [projectDependencies, setProjectDependencies] = useState<any[]>([]);
-  const [projectSimulations, setProjectSimulations] = useState<any[]>([]);
-  const [projectProgress, setProjectProgress] = useState<any[]>([]);
-  const [projectCosts, setProjectCosts] = useState<any[]>([]);
+  const [projectAnalysis, setProjectAnalysis] = useState<ProjectScheduleAnalysis[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/project-tasks')
+    fetch('http://localhost:3001/api/analytics/projectTasks')
       .then(res => res.json())
-      .then((data: ProjectTask[]) => setProjectTasks(data))
+      .then((data: ProjectScheduleAnalysis[]) => {
+        // 데이터가 배열인지 확인하고 설정
+        const analysisArray = Array.isArray(data) ? data : [];
+        setProjectAnalysis(analysisArray);
+      })
       .catch(console.error);
   }, []);
 
-  useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/project-dependencies')
-      .then(res => res.json())
-      .then((data: any[]) => setProjectDependencies(data))
-      .catch(console.error);
-  }, []);
+  // 첫 번째 분석 데이터 가져오기 (가장 최근 데이터)
+  const firstData = useMemo(() => {
+    if (!Array.isArray(projectAnalysis) || projectAnalysis.length === 0) {
+      return null;
+    }
+    return projectAnalysis[0];
+  }, [projectAnalysis]);
 
-  useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/project-simulations')
-      .then(res => res.json())
-      .then((data: any[]) => setProjectSimulations(data))
-      .catch(console.error);
-  }, []);
+  //1. 간트차트 데이터 생성
+  const ganttData = useMemo(() => {
+    if (!firstData || !firstData.task_list || !firstData.start_dates || !firstData.durations) {
+      return ganttProjects[0];
+    }
 
-  useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/project-progress')
-      .then(res => res.json())
-      .then((data: any[]) => setProjectProgress(data))
-      .catch(console.error);
-  }, []);
+    const tasks = firstData.task_list.map((task, index) => {
+      const startDate = firstData.start_dates[task];
+      const duration = firstData.durations[task] || 1;
+      const start = startDate ? dayjs(startDate).diff(dayjs(firstData.start_dates[firstData.task_list[0]]), 'day') : index;
+      const end = start + duration;
+      
+      return {
+        name: task,
+        start,
+        end,
+        color: ['#60a5fa', '#fbbf24', '#34d399', '#a78bfa', '#f87171'][index % 5],
+      };
+    });
 
-  useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/project-costs')
-      .then(res => res.json())
-      .then((data: any[]) => setProjectCosts(data))
-      .catch(console.error);
-  }, []);
+    const totalDays = Math.max(...tasks.map(t => t.end));
 
-  //2. PERT 네트워크
-  // 예시 project_dependencies 데이터
-  const pertEdges = projectDependencies.map((row: any) => ({
-    source: row.from,
-    target: row.to,
-    label: String(row.planned_duration),
-  }));
+    return {
+      id: firstData.project_id,
+      name: `프로젝트 ${firstData.project_id}`,
+      tasks,
+      totalDays,
+    };
+  }, [firstData]);
 
-  // 노드 색상 맵(이미지 스타일 참고)
-  const nodeColors: Record<string, string> = {
-    '영업': '#38bdf8', 'CS': '#0ea5e9', '배포': '#f87171',
-    'QA': '#a78bfa', '기획': '#fbbf24', '개발': '#34d399',
-    '테스트': '#a78bfa', '디자인': '#a78bfa'
-  };
+  //2. PERT 네트워크 데이터
+  const pertData = useMemo(() => {
+    if (!firstData || !firstData.dependencies) {
+      return { nodes: [], links: [] };
+    }
 
-  const pertNodes = Array.from(
-    new Set([
-      ...projectDependencies.map((row: any) => row.from),
-      ...projectDependencies.map((row: any) => row.to),
-    ])
-  ).map((id: string) => ({
-    id,
-    color: nodeColors[id] || '#888',
-    size: 800,
-    fontColor: nodeColors[id] || '#888',
-  }));
+    const nodes = new Set<string>();
+    const edges: { from: string; to: string; duration: number }[] = [];
 
-  // PERT 차트용 팀 데이터 생성
-  const pertTeams = Array.from(
-    new Set([
-      ...projectDependencies.map((row: any) => row.from),
-      ...projectDependencies.map((row: any) => row.to),
-    ])
-  ).map((teamName: string) => ({
-    label: teamName,
-    color: nodeColors[teamName] || '#888'
-  }));
-
-  // 3. 단계별 지연 워터폴
-  const stepList_3 = projectTasks.map((t: any) => t.task_name);
-
-  const deltaData = projectTasks.map((t: any) =>
-    (typeof t.delta === 'number')
-      ? t.delta
-      : (typeof t.actual_duration === 'number' && typeof t.planned_duration === 'number')
-        ? t.actual_duration - t.planned_duration
-        : 0
-  );
-
-  // 이미지 스타일 참고 색상 (빨강/초록/주황/연두)
-  const barColors = deltaData.map(val =>
-    val > 0
-      ? (val > 2 ? '#fbbf24' : '#f87171')  // 오렌지(2↑), 빨강(0~2)
-      : (val < 0 ? (val < -1 ? '#a3e635' : '#34d399') : '#e5e7eb') // 연두(-1↓), 초록(-1~0), 회색(0)
-  );
-
-  // 4. 몬테카 히스토그램
-  // projectSimulations: [{ sim_dates: string[] }]
-  const allDates: string[] = projectSimulations.flatMap(
-    (row: any) => Array.isArray(row.sim_dates) ? row.sim_dates : [row.sim_dates]
-  );
-
-  // 최근 10일(예시), 원하면 기간 조정
-  const days = Array.from({ length: 10 }, (_, i) =>
-    dayjs().subtract(9 - i, 'day').format('M/D')
-  );
-
-  const dateCount: Record<string, number> = {};
-  allDates.forEach(dateStr => {
-    const d = dayjs(dateStr).format('M/D');
-    dateCount[d] = (dateCount[d] || 0) + 1;
-  });
-
-  // x축 날짜, y축 count
-  const histogramData = {
-    labels: days,
-    datasets: [
-      {
-        label: '건수',
-        data: days.map(d => dateCount[d] || 0),
-        backgroundColor: '#818cf8',
-        borderRadius: 8,
-        barPercentage: 0.8,
+    Object.entries(firstData.dependencies).forEach(([task, dependencies]) => {
+      nodes.add(task);
+      
+      if (Array.isArray(dependencies)) {
+        dependencies.forEach(dep => {
+          nodes.add(dep);
+          const duration = firstData.durations?.[task] || 1;
+          edges.push({ from: dep, to: task, duration });
+        });
       }
-    ]
-  };
+    });
 
-  // 5. 단계 진행률 라인차트
-  const sortedProgress = [...projectProgress]
-    .filter((row: any) => typeof row.pct_complete === 'number' && row.time)
-    .sort((a, b) => dayjs(a.time).unix() - dayjs(b.time).unix());
+    return {
+      nodes: Array.from(nodes).map(id => ({ id })),
+      links: edges.map(e => ({ source: e.from, target: e.to, label: String(e.duration) })),
+    };
+  }, [firstData]);
 
-  const labels_5 = sortedProgress.map(row =>
-    dayjs(row.time).format('M/D')
-  );
-  const data_5 = sortedProgress.map(row => row.pct_complete);
+  //3. 단계별 지연 시간 (워터폴 차트)
+  const delayData = useMemo(() => {
+    if (!firstData || !firstData.delay_times) {
+      return { labels: [], data: [] };
+    }
 
-  const progressLineData = {
-    labels: labels_5,
-    datasets: [
-      {
-        label: '진행률(%)',
-        data: data_5,
-        borderColor: '#3b82f6',
-        backgroundColor: '#3b82f622',
-        fill: true,
-        pointBackgroundColor: '#fff',
-        pointBorderColor: '#3b82f6',
-        pointRadius: 4,
-        tension: 0.35,
-        borderWidth: 2,
-      }
-    ]
-  };
+    const labels = Object.keys(firstData.delay_times);
+    const data = Object.values(firstData.delay_times);
 
-  // 6. 리스크 박스플롯 (바형태로 대체)
-  const stepList_6 = Array.from(new Set(projectSimulations.map((row: any) => row.step)));
+    return { labels, data };
+  }, [firstData]);
 
-  const delayStats = stepList_6.map(step => {
-    debugger;
-    const delays = projectSimulations
-      .filter((row: any) => row.step === step && typeof row.delay === 'number')
-      .map((row: any) => row.delay);
+  //4. 시뮬레이션 완료일 분포 (히스토그램)
+  const simulationData = useMemo(() => {
+    if (!firstData || !firstData.simulation_completion_dates) {
+      return { labels: [], data: [] };
+    }
 
-    const min = delays.length ? Math.min(...delays) : 0;
-    const avg = delays.length ? (delays.reduce((a, b) => a + b, 0) / delays.length) : 0;
-    const max = delays.length ? Math.max(...delays) : 0;
+    const dates = firstData.simulation_completion_dates;
+    const dateCount: Record<string, number> = {};
+    
+    dates.forEach(dateStr => {
+      const d = dayjs(dateStr).format('M/D');
+      dateCount[d] = (dateCount[d] || 0) + 1;
+    });
 
-    return { min, avg, max };
-  });
+    const labels = Object.keys(dateCount).sort();
+    const data = labels.map(d => dateCount[d]);
 
-  const riskBarData = {
-    labels: stepList_6,
-    datasets: [
-      {
-        label: '최소',
-        data: delayStats.map(stat => stat.min),
-        backgroundColor: '#c7d2fe', // 연한 파랑
-      },
-      {
-        label: '평균',
-        data: delayStats.map(stat => stat.avg),
-        backgroundColor: '#60a5fa', // 중간 파랑
-      },
-      {
-        label: '최대',
-        data: delayStats.map(stat => stat.max),
-        backgroundColor: '#1e40af', // 진한 파랑
-      },
-    ],
-  };
+    return { labels, data };
+  }, [firstData]);
 
-  // 7. 완료대기 산점도
-  const stepList = Array.from(new Set(projectTasks.map((row: any) => row.step)));
+  //5. 단계별 진행률 (라인차트)
+  const progressData = useMemo(() => {
+    if (!firstData || !firstData.progress) {
+      return { labels: [], data: [] };
+    }
 
-  const colorMap: Record<string, string> = {
-    '기획': '#3b82f6',
-    '설계': '#22c55e',
-    '개발': '#f59e42',
-    // 필요시 추가
-  };
+    const labels = Object.keys(firstData.progress);
+    const data = Object.values(firstData.progress);
 
-  // step별로 데이터 분리 (chartjs scatter는 datasets별로 색상분리됨)
-  const scatterDatasets = stepList.map((step, i) => ({
-    label: step,
-    data: projectTasks
-      .filter((row: any) => row.step === step && typeof row.lag === 'number')
-      .map((row: any) => ({
-        x: i + 1,     // 1, 2, 3, ...
-        y: row.lag,
-      })),
-    backgroundColor: colorMap[step] || '#888',
-    pointRadius: 2,
-  }));
+    return { labels, data };
+  }, [firstData]);
 
-  // 8. 예산 vs 일정 면적차트
-  const sortedCosts = [...projectCosts]
-    .filter((row: any) => typeof row.cum_cost === 'number' && row.time)
-    .sort((a, b) => dayjs(a.time).unix() - dayjs(b.time).unix());
+  //6. 단계별 상태 분포 (파이차트)
+  const statusData = useMemo(() => {
+    if (!firstData || !firstData.stage_status) {
+      return { labels: [], data: [] };
+    }
 
-  const labels = sortedCosts.map(row =>
-    dayjs(row.time).format('M/D')
-  );
-  const data = sortedCosts.map(row => row.cum_cost);
+    const statusCounts: Record<string, number> = {};
+    Object.values(firstData.stage_status).forEach(status => {
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
 
-  const costAreaData = {
-    labels,
-    datasets: [
-      {
-        label: '누적 예산(만원)',
-        data,
-        borderColor: '#f59e42',         // 오렌지
-        backgroundColor: '#f59e4222',   // 연오렌지(투명)
-        fill: true,
-        pointBackgroundColor: '#fff',
-        pointBorderColor: '#f59e42',
-        pointRadius: 4,
-        tension: 0.35,
-        borderWidth: 2,
-      }
-    ]
-  };
-  
-  // 9. 단계 상태 파이차트
-  const statusLabels = ['completed', 'in_progress', 'delayed'];
-  const colorMap_9: Record<string, string> = {
-    'completed': '#22c55e',   // 초록
-    'in_progress': '#6366f1', // 파랑
-    'delayed': '#f87171',     // 빨강
-  };
+    const labels = Object.keys(statusCounts);
+    const data = Object.values(statusCounts);
 
-  const statusCounts: Record<string, number> = {};
-  projectTasks.forEach((row: any) => {
-    statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
-  });
+    return { labels, data };
+  }, [firstData]);
 
-  const pieData = {
-    labels: statusLabels,
-    datasets: [
-      {
-        label: '단계 상태',
-        data: statusLabels.map(l => statusCounts[l] || 0),
-        backgroundColor: statusLabels.map(l => colorMap_9[l] || '#888'),
-        borderWidth: 0,
-      }
-    ]
-  };
+  //7. 단계 간 간격 (산점도)
+  const intervalData = useMemo(() => {
+    if (!firstData || !firstData.intervals) {
+      return { datasets: [] };
+    }
+
+    const intervals = Object.entries(firstData.intervals);
+    const data = intervals.map(([task, interval], index) => ({
+      x: index + 1,
+      y: interval,
+    }));
+
+    return {
+      datasets: [
+        {
+          label: '단계 간 간격',
+          data,
+          backgroundColor: '#3b82f6',
+          pointRadius: 6,
+        },
+      ],
+    };
+  }, [firstData]);
+
+  //8. 예산 누적 소모 (면적차트)
+  const budgetData = useMemo(() => {
+    if (!firstData || !firstData.cumulative_budget) {
+      return { labels: [], data: [] };
+    }
+
+    const labels = Object.keys(firstData.cumulative_budget).sort();
+    const data = labels.map(task => firstData.cumulative_budget[task]);
+
+    return { labels, data };
+  }, [firstData]);
+
+  //9. 계획 vs 실제 완료일 비교 (막대그래프)
+  const completionComparison = useMemo(() => {
+    if (!firstData || !firstData.planned_completion_dates || !firstData.actual_completion_dates) {
+      return { labels: [], planned: [], actual: [] };
+    }
+
+    const tasks = Object.keys(firstData.planned_completion_dates);
+    const planned = tasks.map(task => {
+      const date = firstData.planned_completion_dates[task];
+      return date ? dayjs(date).diff(dayjs(firstData.start_dates[task] || firstData.date), 'day') : 0;
+    });
+    const actual = tasks.map(task => {
+      const date = firstData.actual_completion_dates[task];
+      return date ? dayjs(date).diff(dayjs(firstData.start_dates[task] || firstData.date), 'day') : 0;
+    });
+
+    return { labels: tasks, planned, actual };
+  }, [firstData]);
 
   return (
     <>
-      {/* 3x3 그리드: 9개 프로젝트 일정 분석 차트 (회사탭) */}
+      {/* 3x3 그리드: 9개 프로젝트 일정 분석 차트 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
 
-        {/* 1. 간트차트 (프로젝트 선택 + 전문 Gantt) */}
+        {/* 1. 간트차트 */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
           <div className="font-semibold mb-3 text-[#22223b] flex items-center justify-between">
             <span>간트 차트</span>
-            {/* 프로젝트 셀렉트 박스 */}
             <select
               className="ml-4 border border-blue-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
               value={selectedProjectId}
@@ -359,111 +289,190 @@ export default function ProjectAnalytics() {
             </select>
           </div>
           <div className="flex-1 flex items-center justify-center">
-            {/* 전문 Gantt Chart */}
-            <GanttChart project={ganttProjects.find(p => p.id === selectedProjectId) || ganttProjects[0]} />
+            <GanttChart project={ganttData} />
           </div>
         </div>
 
-        {/* 2. PERT 네트워크 (SVG 네트워크 차트) */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center min-h-[220px]">
+        {/* 2. PERT 네트워크 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center min-h-[300px]">
           <div className="font-semibold mb-3 text-[#22223b]">PERT 네트워크</div>
           <div className="w-full flex-1 flex items-center justify-center">
-            <PertNetworkChart teams={pertTeams} dependencies={projectDependencies} />
+            <ForceGraph2D
+              graphData={pertData}
+              nodeLabel={(node: any) => node.id}
+              nodeAutoColorBy="group"
+              linkDirectionalParticles={2}
+              linkDirectionalParticleWidth={2}
+              width={250}
+              height={250}
+              nodeCanvasObject={(node: any, ctx, globalScale) => {
+                const label = node.id;
+                const fontSize = 12 / globalScale;
+                ctx.font = `${fontSize}px Sans-Serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillStyle = '#22223b';
+                ctx.fillText(label, node.x, node.y + 8);
+              }}
+            />
           </div>
         </div>
 
-        {/* 3. 단계별 지연 워터폴 (막대그래프) */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
-          <div className="font-semibold mb-3 text-[#22223b]">단계별 지연(워터폴)</div>
-          <Bar
-            data={{
-              labels: stepList,
-              datasets: [{
-                label: '지연(일)',
-                data: deltaData,
-                backgroundColor: barColors,
-              }],
-            }}
-            options={{
-              plugins: { legend: { display: false } },
-              scales: { y: { title: { display: true, text: '지연(일)' } } },
-            }}
-          />
-        </div>
-
-        {/* 4. 몬테카 히스토그램 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
-          <div className="font-semibold mb-3 text-[#22223b]">완료일 분포(몬테카)</div>
-          <Bar
-            data={histogramData}
-            options={{
-              plugins: { legend: { display: false } },
-              scales: { y: { beginAtZero: true, title: { display: true, text: '건수' } } },
-            }}
-          />
-        </div>
-
-        {/* 5. 단계 진행률 라인차트 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
-          <div className="font-semibold mb-3 text-[#22223b]">단계 진행률</div>
-          <Line
-            data={progressLineData}
-            options={{
-              plugins: { legend: { display: false } },
-              scales: { y: { min: 0, max: 100, title: { display: true, text: '진행률(%)' } } },
-            }}
-          />
-        </div>
-
-        {/* 6. 리스크 박스플롯 (바형태로 대체) */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
-          <div className="font-semibold mb-3 text-[#22223b]">리스크 분포</div>
-          <Bar
-            data={riskBarData}
-            options={{
-              plugins: { legend: { position: 'bottom' } },
-              scales: { y: { beginAtZero: true, title: { display: true, text: '지연(일)' } } },
-            }}
-          />
-        </div>
-
-        {/* 7. 완료대기 산점도 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
-          <div className="font-semibold mb-3 text-[#22223b]">완료-대기 산점도</div>
-          <Scatter
-            data={{
-              datasets: scatterDatasets
-            }}
-            options={{
-              plugins: { legend: { position: 'top' } },
-              scales: {
-                x: { title: { display: true, text: '선행 단계' } },
-                y: { title: { display: true, text: '후행 단계 대기(일)' } },
-              },
-            }}
-          />
-        </div>
-
-        {/* 8. 예산 vs 일정 면적차트 */}
+        {/* 3. 단계별 지연 시간 (워터폴) */}
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
-          <div className="font-semibold mb-3 text-[#22223b]">예산 vs 일정</div>
-          <Line
-            data={costAreaData}
-            options={{
-              plugins: { legend: { display: false } },
-              scales: { y: { beginAtZero: true, title: { display: true, text: '누적 예산(만원)' } } },
-            }}
-          />
+          <div className="font-semibold mb-3 text-[#22223b]">단계별 지연 시간</div>
+          <div className="flex-1 flex items-center">
+            <Bar
+              data={{
+                labels: delayData.labels,
+                datasets: [{
+                  label: '지연 시간(일)',
+                  data: delayData.data,
+                  backgroundColor: delayData.data.map(val => 
+                    val > 0 ? '#f87171' : val < 0 ? '#34d399' : '#e5e7eb'
+                  ),
+                }],
+              }}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { title: { display: true, text: '지연 시간(일)' } } },
+              }}
+            />
+          </div>
         </div>
 
-        {/* 9. 단계 상태 파이차트 */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center">
-          <div className="font-semibold mb-3 text-[#22223b]">단계 상태 비율</div>
-          <div className="w-[270px] h-[270px] flex justify-center">
+        {/* 4. 시뮬레이션 완료일 분포 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">완료일 시뮬레이션 분포</div>
+          <div className="flex-1 flex items-center">
+            <Bar
+              data={{
+                labels: simulationData.labels,
+                datasets: [{
+                  label: '건수',
+                  data: simulationData.data,
+                  backgroundColor: '#818cf8',
+                  borderRadius: 8,
+                  barPercentage: 0.8,
+                }],
+              }}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '건수' } } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 5. 단계별 진행률 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">단계별 진행률</div>
+          <div className="flex-1 flex items-center">
+            <Bar
+              data={{
+                labels: progressData.labels,
+                datasets: [{
+                  label: '진행률(%)',
+                  data: progressData.data,
+                  backgroundColor: '#3b82f6',
+                }],
+              }}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { min: 0, max: 100, title: { display: true, text: '진행률(%)' } } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 6. 단계별 상태 분포 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col items-center min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">단계별 상태 분포</div>
+          <div className="w-[270px] h-[270px] flex items-center justify-center">
             <Pie
-              data={pieData}
+              data={{
+                labels: statusData.labels,
+                datasets: [{
+                  label: '상태',
+                  data: statusData.data,
+                  backgroundColor: ['#22c55e', '#6366f1', '#f87171', '#f59e0b'],
+                }],
+              }}
               options={{
                 plugins: { legend: { position: 'bottom' } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 7. 단계 간 간격 (산점도) */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">단계 간 간격</div>
+          <div className="flex-1 flex items-center">
+            <Scatter
+              data={intervalData}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { title: { display: true, text: '단계 순서' } },
+                  y: { title: { display: true, text: '간격(일)' } },
+                },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 8. 예산 누적 소모 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">예산 누적 소모</div>
+          <div className="flex-1 flex items-center">
+            <Line
+              data={{
+                labels: budgetData.labels,
+                datasets: [{
+                  label: '누적 예산(만원)',
+                  data: budgetData.data,
+                  borderColor: '#f59e42',
+                  backgroundColor: '#f59e4222',
+                  fill: true,
+                  pointBackgroundColor: '#fff',
+                  pointBorderColor: '#f59e42',
+                  pointRadius: 4,
+                  tension: 0.35,
+                  borderWidth: 2,
+                }],
+              }}
+              options={{
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '누적 예산(만원)' } } },
+              }}
+            />
+          </div>
+        </div>
+
+        {/* 9. 계획 vs 실제 완료일 비교 */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col min-h-[300px]">
+          <div className="font-semibold mb-3 text-[#22223b]">계획 vs 실제 완료일</div>
+          <div className="flex-1 flex items-center">
+            <Bar
+              data={{
+                labels: completionComparison.labels,
+                datasets: [
+                  {
+                    label: '계획',
+                    data: completionComparison.planned,
+                    backgroundColor: '#3b82f6',
+                  },
+                  {
+                    label: '실제',
+                    data: completionComparison.actual,
+                    backgroundColor: '#f59e0b',
+                  },
+                ],
+              }}
+              options={{
+                plugins: { legend: { position: 'bottom' } },
+                scales: { y: { beginAtZero: true, title: { display: true, text: '소요일수' } } },
               }}
             />
           </div>

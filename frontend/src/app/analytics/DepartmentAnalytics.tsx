@@ -4,49 +4,58 @@ import { useEffect, useMemo, useState } from 'react';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement } from 'chart.js';
 import { Doughnut, Line, Bar, Scatter, Pie } from 'react-chartjs-2';
 import dayjs from 'dayjs';
-import ForceGraph2D from 'react-force-graph-2d';
+import dynamic from 'next/dynamic';
+
+// ForceGraph2D를 동적 import로 변경하여 SSR 오류 방지
+const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
+  ssr: false,
+  loading: () => <div className="flex items-center justify-center h-64 bg-gray-50 rounded-lg">네트워크 그래프 로딩 중...</div>
+});
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, BarElement);
 
-interface DepartmentTask {
-  id: string;                  // 문서/일정 고유 ID
-  department: string;          // 부서명
-  assignee: string;            // 담당자(팀원)
-  task_owner: string;          // 일정 생성자
-  participants: string[];      // 일정 참여자 목록
-  type: string;                // 일정 유형(회의/실행/검토 등)
-  delay: number;               // 응답시간(분)
-  start_time: Date | string;   // 시작시간
-  end_time: Date | string;     // 종료시간
-  date: string;                // 일정 일자(YYYY-MM-DD 등)
-  status: string;              // 상태(완료, 진행중 등)
-  duration: number;            // 소요시간(분)
-  quality?: number;            // 품질점수(품질 vs 시간 차트용, 없는 경우도 있음)
-  emotion?: number;            // 감정점수(감정분석용, 없으면 제외)
-  [key: string]: any;          // 확장성(필요시 추가 필드)
+// DepartmentScheduleAnalysis 스키마에 맞는 인터페이스
+interface DepartmentScheduleAnalysis {
+  department_name: string;           // 부서명
+  date: string;                      // 분석 날짜
+  average_delay_per_member: Record<string, number>; // 팀원별 평균 응답 및 지연 시간
+  schedule_type_ratio: Record<string, number>;      // 일정 유형별 비율
+  bottleneck_time_slots: Record<string, Record<string, number>>; // 시간대별 병목 현상 건수
+  collaboration_network: Record<string, string[]>;  // 협업 네트워크 참여 횟수
+  workload_by_member_and_type: Record<string, Record<string, number>>; // 팀원별 업무 유형별 투입 시간
+  execution_time_stats: Record<string, { min: number; max: number; median: number }>; // 업무 수행시간 통계
+  quality_stats: Record<string, { avg: number; min: number; max: number }>; // 업무 품질 통계
+  monthly_schedule_trends: Record<string, number>;  // 월별 일정 건수 추이
+  issue_occurrence_rate: Record<string, Record<string, number>>; // 태그별, 팀별 지연 건수
 }
 
 export default function DepartmentAnalytics() {
-  const [departmentTasks, setDepartmentTasks] = useState<DepartmentTask[]>([]);
+  const [departmentAnalysis, setDepartmentAnalysis] = useState<DepartmentScheduleAnalysis[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/analytics/department-tasks')
+    fetch('http://localhost:3001/api/analytics/departmentTasks')
       .then(res => res.json())
-      .then((data: DepartmentTask[]) => setDepartmentTasks(data))
+      .then((data: DepartmentScheduleAnalysis[]) => {
+        // 데이터가 배열인지 확인하고 설정
+        const analysisArray = Array.isArray(data) ? data : [];
+        setDepartmentAnalysis(analysisArray);
+      })
       .catch(console.error);
   }, []);
 
   //1번 차트 - 팀원별 응답시간
   const delayByAssignee = useMemo(() => {
-    const delayMap: Record<string, { totalDelay: number; count: number }> = {};
-    departmentTasks.forEach(({ assignee, delay }) => {
-      if (!delayMap[assignee]) delayMap[assignee] = { totalDelay: 0, count: 0 };
-      delayMap[assignee].totalDelay += delay;
-      delayMap[assignee].count += 1;
-    });
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { labels: [], datasets: [] };
+    }
 
-    const labels = Object.keys(delayMap);
-    const data = labels.map(user => Math.round(delayMap[user].totalDelay / delayMap[user].count));
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.average_delay_per_member) {
+      return { labels: [], datasets: [] };
+    }
+
+    const labels = Object.keys(firstData.average_delay_per_member);
+    const data = Object.values(firstData.average_delay_per_member);
 
     return {
       labels,
@@ -58,18 +67,22 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [departmentTasks]);
+  }, [departmentAnalysis]);
 
   //2번 차트: 일정 유형 파이차트
   const typePieData = useMemo(() => {
-    const map: Record<string, number> = {};
-    departmentTasks.forEach(({ type }) => {
-      map[type] = (map[type] || 0) + 1;
-    });
-  
-    const labels = Object.keys(map);
-    const data = labels.map(label => map[label]);
-  
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { labels: [], datasets: [] };
+    }
+
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.schedule_type_ratio) {
+      return { labels: [], datasets: [] };
+    }
+
+    const labels = Object.keys(firstData.schedule_type_ratio);
+    const data = Object.values(firstData.schedule_type_ratio);
+
     return {
       labels,
       datasets: [
@@ -80,98 +93,122 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [departmentTasks]);
+  }, [departmentAnalysis]);
 
   //3번 차트: 시간대별 병목 히트맵
   const heatmapData = useMemo(() => {
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return [];
+    }
+
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.bottleneck_time_slots) {
+      return [];
+    }
+
     const timeBlocks = ['08-10', '10-12', '12-14', '14-16', '16-18'];
     const days = ['일', '월', '화', '수', '목', '금', '토'];
-  
-    const map: Record<string, Record<string, number>> = {};
-    timeBlocks.forEach(tb => {
-      map[tb] = {};
-      days.forEach(d => (map[tb][d] = 0));
-    });
-  
-    departmentTasks.forEach(task => {
-      const start = new Date(task.start_time);
-      const end = new Date(task.end_time);
-      const day = days[start.getDay()];
-  
-      const blockIndex = (hour: number) => {
-        if (hour < 8) return null;
-        const idx = Math.floor((hour - 8) / 2);
-        return timeBlocks[idx] || null;
-      };
-  
-      let hour = new Date(start).getHours();
-      while (hour < new Date(end).getHours()) {
-        const block = blockIndex(hour);
-        if (block) {
-          map[block][day] += 1;
-        }
-        hour += 1;
-      }
-    });
-  
+    
     // 2차원 배열로 변환 (시간대 행, 요일 열)
-    return timeBlocks.map(tb => days.map(d => map[tb][d]));
-  }, [departmentTasks]);
+    return timeBlocks.map(tb => 
+      days.map(d => firstData.bottleneck_time_slots[tb]?.[d] || 0)
+    );
+  }, [departmentAnalysis]);
 
   //4. 협업 네트워크 그래프
-  const nodes = new Set<string>();
-  const edges: { from: string; to: string }[] = [];
+  const graphData = useMemo(() => {
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { nodes: [], links: [] };
+    }
 
-  departmentTasks.forEach(task => {
-    nodes.add(task.department);
-    nodes.add(task.assignee);
-    edges.push({ from: task.department, to: task.assignee });
-  });
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.collaboration_network) {
+      return { nodes: [], links: [] };
+    }
 
-  const graphData = {
-    nodes: Array.from(nodes).map(id => ({ id })),
-    links: edges.map(e => ({ source: e.from, target: e.to })),
-  };
-  
+    const nodes = new Set<string>();
+    const edges: { from: string; to: string }[] = [];
+
+    Object.entries(firstData.collaboration_network).forEach(([member, collaborators]) => {
+      nodes.add(member);
+      
+      // collaborators가 배열인지 확인하고 안전하게 처리
+      if (Array.isArray(collaborators)) {
+        collaborators.forEach(collaborator => {
+          if (typeof collaborator === 'string') {
+            nodes.add(collaborator);
+            edges.push({ from: member, to: collaborator });
+          }
+        });
+      } else if (typeof collaborators === 'string') {
+        // collaborators가 단일 문자열인 경우
+        nodes.add(collaborators);
+        edges.push({ from: member, to: collaborators });
+      } else if (typeof collaborators === 'object' && collaborators !== null) {
+        // collaborators가 객체인 경우 (예: {name: string, count: number})
+        Object.keys(collaborators).forEach(collaborator => {
+          if (typeof collaborator === 'string') {
+            nodes.add(collaborator);
+            edges.push({ from: member, to: collaborator });
+          }
+        });
+      }
+    });
+
+    return {
+      nodes: Array.from(nodes).map(id => ({ id })),
+      links: edges.map(e => ({ source: e.from, target: e.to })),
+    };
+  }, [departmentAnalysis]);
+
   //5번 그래프: 업무 유형별 시간 분포
   const deptTypeDuration = useMemo(() => {
-    // 1. 부서와 유형별로 누적 시간 합산
-    const map: Record<string, Record<string, number>> = {};
-    departmentTasks.forEach(({ department, type, duration }) => {
-      if (!map[department]) map[department] = {};
-      map[department][type] = (map[department][type] || 0) + duration;
-    });
-  
-    // 2. 부서/유형 모두 모으기
-    const departments = Object.keys(map);
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { labels: [], datasets: [] };
+    }
+
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.workload_by_member_and_type) {
+      return { labels: [], datasets: [] };
+    }
+
+    const members = Object.keys(firstData.workload_by_member_and_type);
     const allTypes = Array.from(
-      new Set(departmentTasks.map(task => task.type))
+      new Set(
+        Object.values(firstData.workload_by_member_and_type)
+          .flatMap(memberData => Object.keys(memberData))
+      )
     );
-  
-    // 3. Chart.js 데이터셋 생성
+
     const datasets = allTypes.map((type, idx) => ({
       label: type,
-      data: departments.map(dep => map[dep][type] || 0),
+      data: members.map(member => firstData.workload_by_member_and_type[member]?.[type] || 0),
       backgroundColor: ['#60a5fa', '#f59e0b', '#10b981', '#ef4444'][idx % 4],
       stack: 'total'
     }));
-  
-    return { labels: departments, datasets };
-  }, [departmentTasks]);
+
+    return { labels: members, datasets };
+  }, [departmentAnalysis]);
 
   //6. 팀원별 소요시간 분포 (BoxPlot)
   const execTimeStats = useMemo(() => {
-    const map: Record<string, number[]> = {};
-    departmentTasks.forEach(({ assignee, duration }) => {
-      if (!map[assignee]) map[assignee] = [];
-      map[assignee].push(duration);
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { labels: [], datasets: [] };
+    }
+
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.execution_time_stats) {
+      return { labels: [], datasets: [] };
+    }
+
+    const labels = Object.keys(firstData.execution_time_stats);
+    const minData = labels.map(name => firstData.execution_time_stats[name]?.min || 0);
+    const avgData = labels.map(name => {
+      const stats = firstData.execution_time_stats[name];
+      return stats ? (stats.min + stats.max) / 2 : 0; // 중앙값 대신 평균 사용
     });
-    const labels = Object.keys(map);
-    const minData = labels.map(name => Math.min(...map[name]));
-    const avgData = labels.map(name =>
-      Math.round(map[name].reduce((a, b) => a + b, 0) / map[name].length)
-    );
-    const maxData = labels.map(name => Math.max(...map[name]));
+    const maxData = labels.map(name => firstData.execution_time_stats[name]?.max || 0);
+
     return {
       labels,
       datasets: [
@@ -192,34 +229,53 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [departmentTasks]);
+  }, [departmentAnalysis]);
 
   //7번째 품질 vs 시간 산점도
   const qualityScatter = useMemo(() => {
-    // quality라는 필드가 있다고 가정 (없으면 실제 필드명으로 교체)
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { datasets: [] };
+    }
+
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.quality_stats) {
+      return { datasets: [] };
+    }
+
+    const members = Object.keys(firstData.quality_stats);
+    const data = members.map(member => {
+      const stats = firstData.quality_stats[member];
+      return {
+        x: stats?.avg || 0, // 평균 품질
+        y: firstData.execution_time_stats?.[member]?.median || 0, // 중앙값 수행시간
+      };
+    });
+
     return {
       datasets: [
         {
           label: '품질 vs 시간',
-          data: departmentTasks
-            .filter(task => typeof task.duration === 'number' && typeof task.quality === 'number')
-            .map(task => ({ x: task.duration, y: task.quality })),
+          data,
           backgroundColor: '#3b82f6',
         },
       ],
     };
-  }, [departmentTasks]);
+  }, [departmentAnalysis]);
   
   //8번 차트: 월별 작업량 라인차트
   const monthlyCount = useMemo(() => {
-    const map: Record<string, number> = {};
-    departmentTasks.forEach(({ date }) => {
-      // date가 YYYY-MM-DD 형태라고 가정
-      const month = typeof date === 'string' ? date.slice(0, 7) : '';
-      if (month) map[month] = (map[month] || 0) + 1;
-    });
-    const labels = Object.keys(map).sort();
-    const data = labels.map(month => map[month]);
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { labels: [], datasets: [] };
+    }
+
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.monthly_schedule_trends) {
+      return { labels: [], datasets: [] };
+    }
+
+    const labels = Object.keys(firstData.monthly_schedule_trends).sort();
+    const data = labels.map(month => firstData.monthly_schedule_trends[month] || 0);
+
     return {
       labels,
       datasets: [
@@ -233,33 +289,35 @@ export default function DepartmentAnalytics() {
         },
       ],
     };
-  }, [departmentTasks]);
+  }, [departmentAnalysis]);
 
-  //9번 차트: 월별 이슈(지연) 발생률 (late=1 기준)
-  const assignees = Array.from(new Set(departmentTasks.map(t => t.assignee)));
-  const types = Array.from(new Set(departmentTasks.map(t => t.type)));
-
+  //9번 차트: 이슈 발생률 (막대그래프)
   const issueMatrix = useMemo(() => {
-    // 각 [담당자][유형]별로 late=1 건수 집계
-    const matrix: Record<string, Record<string, number>> = {};
-    assignees.forEach(a => {
-      matrix[a] = {};
-      types.forEach(t => (matrix[a][t] = 0));
-    });
-    departmentTasks.forEach(({ assignee, type, late }) => {
-      if (late === 1) matrix[assignee][type]++;
-    });
-    return matrix;
-  }, [departmentTasks]);
+    if (!Array.isArray(departmentAnalysis) || departmentAnalysis.length === 0) {
+      return { labels: [], datasets: [] };
+    }
 
-  const groupedBarData = useMemo(() => ({
-    labels: assignees,
-    datasets: types.map((type, i) => ({
-      label: type,
-      data: assignees.map(a => issueMatrix[a][type]),
-      backgroundColor: ['#2563eb', '#f59e0b', '#10b981', '#6d28d9'][i % 4], // 파랑, 주황, 초록, 보라
-    })),
-  }), [assignees, types, issueMatrix]);
+    const firstData = departmentAnalysis[0];
+    if (!firstData || !firstData.issue_occurrence_rate) {
+      return { labels: [], datasets: [] };
+    }
+
+    const labels = Object.keys(firstData.issue_occurrence_rate);
+    const allTags = Array.from(
+      new Set(
+        Object.values(firstData.issue_occurrence_rate)
+          .flatMap(tagData => Object.keys(tagData))
+      )
+    );
+
+    const datasets = allTags.map((tag, i) => ({
+      label: tag,
+      data: labels.map(label => firstData.issue_occurrence_rate[label]?.[tag] || 0),
+      backgroundColor: ['#2563eb', '#f59e0b', '#10b981', '#6d28d9'][i % 4],
+    }));
+
+    return { labels, datasets };
+  }, [departmentAnalysis]);
 
   return (
     <>
@@ -396,8 +454,8 @@ export default function DepartmentAnalytics() {
             options={{
               plugins: { legend: { position: 'top' } },
               scales: {
-                x: { title: { display: true, text: '수행시간(분)' } },
-                y: { min: 0, max: 100, title: { display: true, text: '품질점수' } },
+                x: { title: { display: true, text: '평균 품질점수' } },
+                y: { title: { display: true, text: '수행시간(분)' } },
               },
             }}
             height={180}
@@ -421,7 +479,7 @@ export default function DepartmentAnalytics() {
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-blue-50 flex flex-col">
           <div className="font-semibold mb-3 text-[#22223b]">이슈 발생률</div>
           <Bar
-            data={groupedBarData}
+            data={issueMatrix}
             options={{
               plugins: { legend: { position: 'bottom' } },
               scales: { y: { beginAtZero: true, title: { display: true, text: '지연 건수' } } },
